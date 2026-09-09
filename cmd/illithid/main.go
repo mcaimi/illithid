@@ -17,6 +17,7 @@ import (
 	"github.com/mcaimi/illithid/internal/api"
 	"github.com/mcaimi/illithid/internal/config"
 	"github.com/mcaimi/illithid/internal/dhcp"
+	"github.com/mcaimi/illithid/internal/intercept"
 	"github.com/mcaimi/illithid/internal/lease"
 	"github.com/mcaimi/illithid/internal/pool"
 )
@@ -35,6 +36,7 @@ func main() {
 	logger.Info("config loaded", "interfaces", len(cfg.Interfaces), "api", cfg.API.Listen)
 
 	leaseStore := lease.NewStore()
+	interceptStore := intercept.NewStore()
 
 	pools := make(map[string]*pool.IPPool, len(cfg.Interfaces))
 	var dhcpServers []*server4.Server
@@ -51,7 +53,7 @@ func main() {
 		}
 		pools[ifCfg.Name] = p
 
-		handler := dhcp.NewHandler(ifCfg, p, leaseStore, logger)
+		handler := dhcp.NewHandler(ifCfg, p, leaseStore, interceptStore, logger)
 
 		srv, err := dhcp.StartServer(ifCfg.Name, handler.ServeDHCP, logger)
 		if err != nil {
@@ -65,7 +67,7 @@ func main() {
 		logger.Info("DHCP server created", "interface", ifCfg.Name, "pool_size", total, "free", free)
 	}
 
-	apiServer := api.NewServer(leaseStore, pools)
+	apiServer := api.NewServer(leaseStore, interceptStore, pools, ifNames)
 	httpServer := &http.Server{
 		Addr:    cfg.API.Listen,
 		Handler: apiServer.Handler(),

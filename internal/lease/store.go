@@ -11,8 +11,9 @@ type Lease struct {
 	MAC       string    `json:"mac"`
 	IP        string    `json:"ip"`
 	Hostname  string    `json:"hostname"`
-	Interface string    `json:"interface"`
-	ExpiresAt time.Time `json:"expires_at"`
+	Interface   string    `json:"interface"`
+	Intercepted bool      `json:"intercepted"`
+	ExpiresAt   time.Time `json:"expires_at"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

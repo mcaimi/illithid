@@ -10,23 +10,25 @@ import (
 	"github.com/insomniacslk/dhcp/dhcpv4/server4"
 
 	"github.com/mcaimi/illithid/internal/config"
+	"github.com/mcaimi/illithid/internal/intercept"
 	"github.com/mcaimi/illithid/internal/lease"
 	"github.com/mcaimi/illithid/internal/pool"
 )
 
 type Handler struct {
-	ifName   string
-	pool     *pool.IPPool
-	leases   *lease.Store
-	serverIP net.IP
-	gateway  net.IP
-	dns      []net.IP
-	mask     net.IPMask
-	duration time.Duration
-	logger   *slog.Logger
+	ifName     string
+	pool       *pool.IPPool
+	leases     *lease.Store
+	intercepts *intercept.Store
+	serverIP   net.IP
+	gateway    net.IP
+	dns        []net.IP
+	mask       net.IPMask
+	duration   time.Duration
+	logger     *slog.Logger
 }
 
-func NewHandler(cfg config.InterfaceConfig, p *pool.IPPool, ls *lease.Store, logger *slog.Logger) *Handler {
+func NewHandler(cfg config.InterfaceConfig, p *pool.IPPool, ls *lease.Store, is *intercept.Store, logger *slog.Logger) *Handler {
 	dns := make([]net.IP, len(cfg.DNS))
 	for i, d := range cfg.DNS {
 		dns[i] = net.ParseIP(d).To4()
@@ -36,15 +38,16 @@ func NewHandler(cfg config.InterfaceConfig, p *pool.IPPool, ls *lease.Store, log
 	mask := net.IPMask(maskIP)
 
 	return &Handler{
-		ifName:   cfg.Name,
-		pool:     p,
-		leases:   ls,
-		serverIP: net.ParseIP(cfg.ServerIP).To4(),
-		gateway:  net.ParseIP(cfg.Gateway).To4(),
-		dns:      dns,
-		mask:     mask,
-		duration: time.Duration(cfg.DHCP.LeaseDuration) * time.Second,
-		logger:   logger.With("interface", cfg.Name),
+		ifName:     cfg.Name,
+		pool:       p,
+		leases:     ls,
+		intercepts: is,
+		serverIP:   net.ParseIP(cfg.ServerIP).To4(),
+		gateway:    net.ParseIP(cfg.Gateway).To4(),
+		dns:        dns,
+		mask:       mask,
+		duration:   time.Duration(cfg.DHCP.LeaseDuration) * time.Second,
+		logger:     logger.With("interface", cfg.Name),
 	}
 }
 
@@ -63,8 +66,23 @@ func (h *Handler) ServeDHCP(conn net.PacketConn, peer net.Addr, msg *dhcpv4.DHCP
 	}
 }
 
+func (h *Handler) interceptParams(il *intercept.Lease) (ip, gw net.IP, dns []net.IP) {
+	ip = net.ParseIP(il.IP).To4()
+	gw = net.ParseIP(il.Gateway).To4()
+	dns = make([]net.IP, len(il.DNS))
+	for i, d := range il.DNS {
+		dns[i] = net.ParseIP(d).To4()
+	}
+	return
+}
+
 func (h *Handler) handleDiscover(conn net.PacketConn, peer net.Addr, msg *dhcpv4.DHCPv4) {
 	mac := msg.ClientHWAddr.String()
+
+	if il, ok := h.intercepts.Lookup(mac); ok && il.Interface == h.ifName {
+		h.sendInterceptOffer(conn, peer, msg, il)
+		return
+	}
 
 	ip, err := h.pool.Allocate(mac)
 	if err != nil {
@@ -95,8 +113,39 @@ func (h *Handler) handleDiscover(conn net.PacketConn, peer net.Addr, msg *dhcpv4
 	h.logger.Info("OFFER sent", "mac", mac, "ip", ip)
 }
 
+func (h *Handler) sendInterceptOffer(conn net.PacketConn, peer net.Addr, msg *dhcpv4.DHCPv4, il *intercept.Lease) {
+	ip, gw, dns := h.interceptParams(il)
+
+	reply, err := dhcpv4.NewReplyFromRequest(msg,
+		dhcpv4.WithMessageType(dhcpv4.MessageTypeOffer),
+		dhcpv4.WithYourIP(ip),
+		dhcpv4.WithServerIP(h.serverIP),
+		dhcpv4.WithOption(dhcpv4.OptSubnetMask(h.mask)),
+		dhcpv4.WithOption(dhcpv4.OptRouter(gw)),
+		dhcpv4.WithOption(dhcpv4.OptDNS(dns...)),
+		dhcpv4.WithOption(dhcpv4.OptIPAddressLeaseTime(h.duration)),
+		dhcpv4.WithOption(dhcpv4.OptServerIdentifier(h.serverIP)),
+	)
+	if err != nil {
+		h.logger.Error("failed to build OFFER (intercepted)", "error", err)
+		return
+	}
+
+	if _, err := conn.WriteTo(reply.ToBytes(), peer); err != nil {
+		h.logger.Error("failed to send OFFER (intercepted)", "error", err)
+		return
+	}
+
+	h.logger.Info("OFFER sent (intercepted)", "mac", msg.ClientHWAddr, "ip", ip, "gateway", gw)
+}
+
 func (h *Handler) handleRequest(conn net.PacketConn, peer net.Addr, msg *dhcpv4.DHCPv4) {
 	mac := msg.ClientHWAddr.String()
+
+	if il, ok := h.intercepts.Lookup(mac); ok && il.Interface == h.ifName {
+		h.handleInterceptRequest(conn, peer, msg, il)
+		return
+	}
 
 	var requestedIP net.IP
 	if opt := msg.Options.Get(dhcpv4.OptionRequestedIPAddress); opt != nil {
@@ -148,6 +197,60 @@ func (h *Handler) handleRequest(conn net.PacketConn, peer net.Addr, msg *dhcpv4.
 	h.logger.Info("ACK sent", "mac", mac, "ip", allocatedIP, "hostname", hostname)
 }
 
+func (h *Handler) handleInterceptRequest(conn net.PacketConn, peer net.Addr, msg *dhcpv4.DHCPv4, il *intercept.Lease) {
+	mac := msg.ClientHWAddr.String()
+	interceptIP, gw, dns := h.interceptParams(il)
+
+	var requestedIP net.IP
+	if opt := msg.Options.Get(dhcpv4.OptionRequestedIPAddress); opt != nil {
+		requestedIP = net.IP(opt)
+	} else if !msg.ClientIPAddr.IsUnspecified() {
+		requestedIP = msg.ClientIPAddr
+	}
+
+	if requestedIP != nil && !interceptIP.Equal(requestedIP) {
+		h.sendNAK(conn, peer, msg, mac, requestedIP)
+		return
+	}
+
+	hostname := ""
+	if opt := msg.Options.Get(dhcpv4.OptionHostName); opt != nil {
+		hostname = string(opt)
+	}
+
+	h.leases.Add(&lease.Lease{
+		MAC:         mac,
+		IP:          il.IP,
+		Hostname:    hostname,
+		Interface:   h.ifName,
+		Intercepted: true,
+		ExpiresAt:   time.Now().Add(h.duration),
+		CreatedAt:   time.Now(),
+	})
+
+	ack, err := dhcpv4.NewReplyFromRequest(msg,
+		dhcpv4.WithMessageType(dhcpv4.MessageTypeAck),
+		dhcpv4.WithYourIP(interceptIP),
+		dhcpv4.WithServerIP(h.serverIP),
+		dhcpv4.WithOption(dhcpv4.OptSubnetMask(h.mask)),
+		dhcpv4.WithOption(dhcpv4.OptRouter(gw)),
+		dhcpv4.WithOption(dhcpv4.OptDNS(dns...)),
+		dhcpv4.WithOption(dhcpv4.OptIPAddressLeaseTime(h.duration)),
+		dhcpv4.WithOption(dhcpv4.OptServerIdentifier(h.serverIP)),
+	)
+	if err != nil {
+		h.logger.Error("failed to build ACK (intercepted)", "error", err)
+		return
+	}
+
+	if _, err := conn.WriteTo(ack.ToBytes(), peer); err != nil {
+		h.logger.Error("failed to send ACK (intercepted)", "error", err)
+		return
+	}
+
+	h.logger.Info("ACK sent (intercepted)", "mac", mac, "ip", interceptIP, "gateway", gw, "hostname", hostname)
+}
+
 func (h *Handler) sendNAK(conn net.PacketConn, peer net.Addr, msg *dhcpv4.DHCPv4, mac string, requestedIP net.IP) {
 	nak, err := dhcpv4.NewReplyFromRequest(msg,
 		dhcpv4.WithMessageType(dhcpv4.MessageTypeNak),
@@ -169,6 +272,12 @@ func (h *Handler) sendNAK(conn net.PacketConn, peer net.Addr, msg *dhcpv4.DHCPv4
 
 func (h *Handler) handleRelease(msg *dhcpv4.DHCPv4) {
 	mac := msg.ClientHWAddr.String()
+
+	if il, ok := h.intercepts.Lookup(mac); ok && il.Interface == h.ifName {
+		h.leases.Remove(mac)
+		h.logger.Info("RELEASE processed (intercepted)", "mac", mac)
+		return
+	}
 
 	if _, err := h.pool.Release(mac); err != nil {
 		h.logger.Warn("release for unknown MAC", "mac", mac)

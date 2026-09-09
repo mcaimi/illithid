@@ -4,8 +4,8 @@ const openapiSpec = `{
   "openapi": "3.0.3",
   "info": {
     "title": "Illithid DHCP Server API",
-    "description": "REST API for the Illithid security-research DHCP server. Provides lease management for DHCP allocations across configured network interfaces.",
-    "version": "1.0.0",
+    "description": "REST API for the Illithid security-research DHCP server. Provides lease management, interception rules for traffic redirection, and connected client visibility.",
+    "version": "2.0.0",
     "license": {
       "name": "MIT"
     }
@@ -32,17 +32,7 @@ const openapiSpec = `{
                   "items": {
                     "$ref": "#/components/schemas/Lease"
                   }
-                },
-                "example": [
-                  {
-                    "mac": "aa:bb:cc:dd:ee:01",
-                    "ip": "192.168.1.100",
-                    "hostname": "workstation-1",
-                    "interface": "eth0",
-                    "expires_at": "2026-09-09T16:00:00Z",
-                    "created_at": "2026-09-09T15:00:00Z"
-                  }
-                ]
+                }
               }
             }
           }
@@ -59,11 +49,10 @@ const openapiSpec = `{
             "name": "mac",
             "in": "path",
             "required": true,
-            "description": "MAC address of the lease to delete (colon-separated, e.g. aa:bb:cc:dd:ee:01)",
+            "description": "MAC address (colon-separated, e.g. aa:bb:cc:dd:ee:01)",
             "schema": {
               "type": "string",
-              "pattern": "^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$",
-              "example": "aa:bb:cc:dd:ee:01"
+              "pattern": "^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$"
             }
           }
         ],
@@ -77,9 +66,197 @@ const openapiSpec = `{
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
-                },
-                "example": {
-                  "error": "lease not found"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/intercepts": {
+      "get": {
+        "summary": "List all interception leases",
+        "description": "Returns all configured interception rules. These rules override normal DHCP responses for specific MAC addresses, redirecting traffic through a custom gateway.",
+        "operationId": "listIntercepts",
+        "responses": {
+          "200": {
+            "description": "List of interception leases (empty array if none)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/InterceptLease"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create an interception lease",
+        "description": "Creates a new interception rule for a specific MAC address. When the DHCP server receives a request from this MAC on the specified interface, it will respond with the custom IP, gateway, and DNS instead of the normal pool allocation.",
+        "operationId": "createIntercept",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterceptLeaseRequest"
+              },
+              "example": {
+                "mac": "aa:bb:cc:dd:ee:01",
+                "ip": "192.168.1.50",
+                "gateway": "192.168.1.254",
+                "dns": ["10.0.0.53"],
+                "interface": "eth0"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Interception lease created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterceptLease"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Interception lease already exists for this MAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/intercepts/{mac}": {
+      "put": {
+        "summary": "Update an interception lease",
+        "description": "Updates the interception rule for the given MAC address. The original creation timestamp is preserved.",
+        "operationId": "updateIntercept",
+        "parameters": [
+          {
+            "name": "mac",
+            "in": "path",
+            "required": true,
+            "description": "MAC address (colon-separated)",
+            "schema": {
+              "type": "string",
+              "pattern": "^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterceptLeaseUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Interception lease updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterceptLease"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No interception lease found for this MAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete an interception lease",
+        "description": "Removes the interception rule for the given MAC address. Any active tracking lease for this client is also removed. The client will receive normal DHCP responses on their next renewal.",
+        "operationId": "deleteIntercept",
+        "parameters": [
+          {
+            "name": "mac",
+            "in": "path",
+            "required": true,
+            "description": "MAC address (colon-separated)",
+            "schema": {
+              "type": "string",
+              "pattern": "^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Interception lease deleted"
+          },
+          "404": {
+            "description": "No interception lease found for this MAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/clients": {
+      "get": {
+        "summary": "List connected clients",
+        "description": "Returns all clients that have completed a DHCP handshake. Each entry includes an 'intercepted' flag indicating whether the client is being served by an interception rule.",
+        "operationId": "listClients",
+        "responses": {
+          "200": {
+            "description": "List of connected clients (empty array if none)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Lease"
+                  }
                 }
               }
             }
@@ -114,6 +291,11 @@ const openapiSpec = `{
             "description": "Network interface that served this lease",
             "example": "eth0"
           },
+          "intercepted": {
+            "type": "boolean",
+            "description": "Whether this client is being served by an interception rule",
+            "example": false
+          },
           "expires_at": {
             "type": "string",
             "format": "date-time",
@@ -125,7 +307,118 @@ const openapiSpec = `{
             "description": "Lease creation timestamp"
           }
         },
-        "required": ["mac", "ip", "interface", "expires_at", "created_at"]
+        "required": ["mac", "ip", "interface", "intercepted", "expires_at", "created_at"]
+      },
+      "InterceptLease": {
+        "type": "object",
+        "properties": {
+          "mac": {
+            "type": "string",
+            "description": "Client MAC address to intercept",
+            "example": "aa:bb:cc:dd:ee:01"
+          },
+          "ip": {
+            "type": "string",
+            "format": "ipv4",
+            "description": "IP address to assign to the intercepted client",
+            "example": "192.168.1.50"
+          },
+          "gateway": {
+            "type": "string",
+            "format": "ipv4",
+            "description": "Custom gateway for traffic inspection",
+            "example": "192.168.1.254"
+          },
+          "dns": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "ipv4"
+            },
+            "description": "Custom DNS server(s)",
+            "example": ["10.0.0.53"]
+          },
+          "interface": {
+            "type": "string",
+            "description": "Network interface this rule applies to",
+            "example": "eth0"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Rule creation timestamp"
+          }
+        },
+        "required": ["mac", "ip", "gateway", "dns", "interface", "created_at"]
+      },
+      "InterceptLeaseRequest": {
+        "type": "object",
+        "properties": {
+          "mac": {
+            "type": "string",
+            "description": "Client MAC address to intercept",
+            "example": "aa:bb:cc:dd:ee:01"
+          },
+          "ip": {
+            "type": "string",
+            "format": "ipv4",
+            "description": "IP address to assign",
+            "example": "192.168.1.50"
+          },
+          "gateway": {
+            "type": "string",
+            "format": "ipv4",
+            "description": "Custom gateway",
+            "example": "192.168.1.254"
+          },
+          "dns": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "ipv4"
+            },
+            "description": "Custom DNS server(s)",
+            "example": ["10.0.0.53"]
+          },
+          "interface": {
+            "type": "string",
+            "description": "Target network interface",
+            "example": "eth0"
+          }
+        },
+        "required": ["mac", "ip", "gateway", "dns", "interface"]
+      },
+      "InterceptLeaseUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "ip": {
+            "type": "string",
+            "format": "ipv4",
+            "description": "IP address to assign",
+            "example": "192.168.1.60"
+          },
+          "gateway": {
+            "type": "string",
+            "format": "ipv4",
+            "description": "Custom gateway",
+            "example": "192.168.1.254"
+          },
+          "dns": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "ipv4"
+            },
+            "description": "Custom DNS server(s)",
+            "example": ["10.0.0.53"]
+          },
+          "interface": {
+            "type": "string",
+            "description": "Target network interface",
+            "example": "eth0"
+          }
+        },
+        "required": ["ip", "gateway", "dns", "interface"]
       },
       "Error": {
         "type": "object",
