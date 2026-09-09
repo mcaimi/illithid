@@ -7,7 +7,7 @@ const openapiSpec = `{
     "description": "REST API for the Illithid security-research DHCP server. Provides lease management, interception rules for traffic redirection, and connected client visibility.",
     "version": "2.0.0",
     "license": {
-      "name": "MIT"
+      "name": "GPLv3"
     }
   },
   "servers": [
