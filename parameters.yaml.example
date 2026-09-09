@@ -1,0 +1,26 @@
+interfaces:
+  - name: "eth0"
+    server_ip: "192.168.1.1"
+    dhcp:
+      range_start: "192.168.1.100"
+      range_end: "192.168.1.200"
+      subnet_mask: "255.255.255.0"
+      lease_duration: 3600
+    dns:
+      - "8.8.8.8"
+      - "8.8.4.4"
+    gateway: "192.168.1.1"
+
+  - name: "eth1"
+    server_ip: "10.0.0.1"
+    dhcp:
+      range_start: "10.0.0.50"
+      range_end: "10.0.0.150"
+      subnet_mask: "255.255.0.0"
+      lease_duration: 7200
+    dns:
+      - "1.1.1.1"
+    gateway: "10.0.0.1"
+
+api:
+  listen: ":8080"
