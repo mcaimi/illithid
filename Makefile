@@ -2,10 +2,15 @@ BINARY   := illithid
 GOFLAGS  := -trimpath
 LDFLAGS  := -s -w
 
-.PHONY: build run clean test vet
+.PHONY: build cli all run clean test vet
 
 build:
 	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o bin/$(BINARY) ./cmd/illithid
+
+cli:
+	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o bin/illithidctl ./cmd/illithidctl
+
+all: build cli
 
 run: build
 	sudo bin/$(BINARY) -config parameters.yaml
