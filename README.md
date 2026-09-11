@@ -69,6 +69,59 @@ Use `make run` as a shortcut (runs `sudo` automatically).
 
 Stop with `Ctrl-C` — the server shuts down gracefully, draining in-flight API requests.
 
+## Container
+
+A `Containerfile` is provided in `containers/` for running Illithid in a container. It uses a multi-stage build with a Debian Bookworm runtime image.
+
+### Building the container image
+
+```sh
+podman build -f containers/Containerfile -t illithid .
+```
+
+Or with Docker:
+
+```sh
+docker build -f containers/Containerfile -t illithid .
+```
+
+### Running the container
+
+The container expects a configuration file at `/etc/illithid/parameters.yaml`. Mount your local config file into the container:
+
+```sh
+podman run --net=host \
+  -v ./parameters.yaml:/etc/illithid/parameters.yaml:Z \
+  illithid
+```
+
+`--net=host` is required because the DHCP server needs direct access to the host's network interfaces and UDP port 67. Without it, the server cannot bind to specific interfaces or receive DHCP broadcast traffic.
+
+To use a different config path or override the default command:
+
+```sh
+podman run --net=host \
+  -v /path/to/my-config.yaml:/etc/illithid/parameters.yaml:Z \
+  illithid
+```
+
+To run in the background:
+
+```sh
+podman run -d --name illithid --net=host \
+  -v ./parameters.yaml:/etc/illithid/parameters.yaml:Z \
+  illithid
+```
+
+### Exposed ports
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| 67 | UDP | DHCP server |
+| 8080 | TCP | REST API |
+
+Note: when using `--net=host`, `EXPOSE` declarations are informational only — the container shares the host's network stack directly.
+
 ## REST API
 
 All endpoints return JSON with `Content-Type: application/json`. The interactive Swagger UI is available at `http://localhost:8080/api/docs`.
